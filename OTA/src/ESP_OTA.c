@@ -1,18 +1,7 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include "driver/gpio.h"
-#include "driver/uart.h"
-#include "sdkconfig.h"
-#include "string.h"
-
 #include "esp_log.h"
 #include "errno.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_system.h"
 #include "esp_event.h"
 #include "esp_ota_ops.h"
 #include "esp_flash_partitions.h"
@@ -22,13 +11,13 @@
 
 #define BUFFSIZE 1024
 #define HASH_LEN 32 /* SHA-256 digest length */
+bool OTA_ACTIVATE;
 char Version[] = "key:d8b9c9670c9717be1f8c74c9e0eb83ec82020fd791c8d0ac";
 
 static const char *TAG = "ESP_OTA_TEST";
+char current_version[] = "1.0.1";
+uint8_t count = 0;
 // static char ota_write_data[BUFFSIZE + 1] = {0};
-
-const int uart_port0 = UART_NUM_0;
-const int uart_port2 = UART_NUM_2;
 
 char ATcommand[220];
 uint8_t rx_buffer[1024] = {0};
@@ -49,7 +38,7 @@ void b64_generate_decode_table();
 int b64_isvalidchar(char c);
 size_t b64_decoded_size(const char *in);
 
-int b64_decode(const char *in /*, unsigned char *out*/, size_t outlen)
+int b64_decode(const char *in, size_t outlen)
 {
     size_t len;
     size_t i;
@@ -57,7 +46,6 @@ int b64_decode(const char *in /*, unsigned char *out*/, size_t outlen)
     int v;
 
     if (in == NULL || out == NULL)
-    // if (in == NULL)
     {
         printf("NULL\n");
         if (out == NULL)
@@ -68,11 +56,8 @@ int b64_decode(const char *in /*, unsigned char *out*/, size_t outlen)
     }
 
     len = strlen(in);
-    // printf("len = %d\r\n", len);
-    // printf("rx_buff_len = %d\r\n", outlen);
     if (outlen < b64_decoded_size(in) || len % 4 != 0)
     {
-        // printf("\n outlen = %d\n", outlen);
         printf("Invalid input data size\n");
         return 0;
     }
@@ -96,16 +81,11 @@ int b64_decode(const char *in /*, unsigned char *out*/, size_t outlen)
         v = in[i + 3] == '=' ? v << 6 : (v << 6) | b64invs[in[i + 3] - 43];
 
         out[j] = (v >> 16) & 0xFF;
-        // printf(out[j]);
-        // printf("Converted Value %d: %c \n", j, out[j]);
         if (in[i + 2] != '=')
             out[j + 1] = (v >> 8) & 0xFF;
-        // printf(out[j+1]);
-        // printf("Converted Value %d: %c \n", j+1, out[j+1]);
+
         if (in[i + 3] != '=')
             out[j + 2] = v & 0xFF;
-        // printf(out[j+2]);
-        // printf("Converted Value %d: %c \n", j+2, out[j+2]);
     }
 
     return 1;
@@ -114,16 +94,12 @@ int b64_decode(const char *in /*, unsigned char *out*/, size_t outlen)
 int b64_isvalidchar(char c)
 {
     if (c >= '0' && c <= '9')
-        // printf("c = %c\r\n", c);
         return 1;
     if (c >= 'A' && c <= 'Z')
-        // printf("c = %c\r\n", c);
         return 1;
     if (c >= 'a' && c <= 'z')
-        // printf("c = %c\r\n", c);
         return 1;
     if (c == '+' || c == '/' || c == '=')
-        // printf("c = %c\r\n", c);
         return 1;
     return 0;
 }
@@ -167,17 +143,6 @@ void b64_generate_decode_table()
     }
 }
 
-// static void __attribute__((noreturn)) task_fatal_error(void)
-// {
-//     ESP_LOGE(TAG, "Exiting task due to fatal error...");
-//     (void)vTaskDelete(NULL);
-
-//     while (1)
-//     {
-//         ;
-//     }
-// }
-
 static void print_sha256(const uint8_t *image_hash, const char *label)
 {
     char hash_print[HASH_LEN * 2 + 1];
@@ -189,21 +154,14 @@ static void print_sha256(const uint8_t *image_hash, const char *label)
     ESP_LOGI(TAG, "%s: %s", label, hash_print);
 }
 
-// static void infinite_loop(void)
-// {
-//     int i = 0;
-//     ESP_LOGI(TAG, "When a new firmware is available on the server, press the reset button to download it");
-//     while (1)
-//     {
-//         ESP_LOGI(TAG, "Waiting for a new firmware ... %d", ++i);
-//         vTaskDelay(2000 / portTICK_PERIOD_MS);
-//     }
-// }
-
-static void ESP_OTA_task(void *pvParameter)
+void ESP_OTA_task(void *pvParameter)
 {
-    while (check_version())
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    ESP_ERROR_CHECK(esp_task_wdt_status(NULL));
+
+    while (OTA_ACTIVATE)
     {
+        ESP_ERROR_CHECK(esp_task_wdt_reset());
         printf("\n\tStarting OTA\n");
 
         esp_err_t err;
@@ -513,12 +471,6 @@ int check_version()
     }
 }
 
-void gpio_init()
-{
-    gpio_reset_pin(SIM_POWER_PIN);
-    gpio_set_direction(SIM_POWER_PIN, GPIO_MODE_OUTPUT);
-}
-
 void sim7600_powerup()
 {
     uart_write_bytes(uart_port0, "POWERING UP\n", strlen("POWERING UP\n"));
@@ -656,31 +608,6 @@ void ssl_init() // SSL COFIGURATION AND LTE ACTIVATION TASK
     vTaskDelay(50 / portTICK_PERIOD_MS);
 }
 
-void uart_init() // UART INITIALIZATION TASK
-{
-    uart_config_t uart_config0 = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
-
-    uart_config_t uart_config2 = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
-    uart_param_config(uart_port0, &uart_config0);
-    uart_param_config(uart_port2, &uart_config2);
-
-    uart_set_pin(uart_port0, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    uart_set_pin(uart_port2, UART_2_TX, UART_2_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-
-    uart_driver_install(uart_port0, BUF_SIZE * 2, 0, 0, NULL, 0);
-    uart_driver_install(uart_port2, BUF_SIZE * 2, 0, 0, NULL, 0);
-}
-
 static bool diagnostic(void)
 {
     gpio_config_t io_conf;
@@ -700,13 +627,8 @@ static bool diagnostic(void)
     return diagnostic_is_ok;
 }
 
-void app_main(void)
+bool ESP32_OTA()
 {
-    gpio_init();
-    uart_init();
-    sim7600_init();
-    ssl_init();
-
     uint8_t sha_256[HASH_LEN] = {0};
     esp_partition_t partition;
 
@@ -760,5 +682,5 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    xTaskCreate(ESP_OTA_task, "ESP_OTA_task", 8192, NULL, 5, NULL);
+    return true;
 }

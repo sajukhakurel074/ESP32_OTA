@@ -9,20 +9,26 @@
 #define UART_2_TX 17
 #define SIM_POWER_PIN 13
 
+#include "main.h"
+
 __int64_t fileSize;
 __int64_t File_Size;
-uint8_t count = 0;
 int Flag_File_End;
+
+extern bool OTA_ACTIVATE;
 
 void sim7600_powerup();
 void sim7600_powerdown();
 void sim7600_init();
 void ssl_init();
 void uart_init();
-char current_version[] = "1.0.1";
+void gpio_init();
+extern char current_version[];
+extern uint8_t count;
 char new_version[50];
 
+void ESP_OTA_task();
 int check_version();
-// static void ESP_OTA(void *pvParameter);
+bool ESP32_OTA();
 
 #endif
